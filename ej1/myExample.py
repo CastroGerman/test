@@ -54,13 +54,17 @@ class AdderCA2(Elaboratable):
 
         with m.If(self.r.accepted()):
             sync += self.r.valid.eq(0)
+        
+        with m.If(self.a.accepted() & self.b.accepted()):
+            sync += [
+                self.r.valid.eq(1),
+                self.r.data.eq(self.a.data + self.b.data)
+            ]
 
-        with m.If(self.b.valid & self.a.valid):
-            sync += self.r.valid.eq(1)
-            sync += self.r.data.eq(self.a.data + self.b.data)
-
-        comb += self.a.ready.eq(self.r.accepted()) 
-        comb += self.b.ready.eq(self.r.accepted())
+        comb += [
+            self.a.ready.eq(((~self.r.valid) | (self.r.accepted())) & (self.a.valid & self.b.valid)),
+            self.b.ready.eq(((~self.r.valid) | (self.r.accepted())) & (self.a.valid & self.b.valid)),
+        ]    
         
         return m
 
@@ -68,6 +72,8 @@ class AdderCA2(Elaboratable):
 async def init_test(dut):
     cocotb.fork(Clock(dut.clk, 100, 'ns').start())
     dut.rst <= 1
+    dut.a__ready <= 0
+    dut.b__ready <= 0
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     dut.rst <= 0
