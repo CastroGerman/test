@@ -1,7 +1,7 @@
 from nmigen import *
 from nmigen_cocotb import run
 import cocotb
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import RisingEdge, Timer, ClockCycles
 from cocotb.clock import Clock
 from random import getrandbits
 
@@ -46,7 +46,6 @@ class AdderCA2(Elaboratable):
         self.a = Stream(width, name='a')
         self.b = Stream(width, name='b')
         self.r = Stream(width, name='r')
-        self.r_aux = Signal(width)
     #platform parameter gives us access to I/O resources
     def elaborate(self, platform):
         m = Module()
@@ -55,50 +54,51 @@ class AdderCA2(Elaboratable):
 
         with m.If(self.r.accepted()):
             sync += self.r.valid.eq(0)
-
+        
         with m.If(self.a.accepted() & self.b.accepted()):
-            sync += self.r.valid.eq(1)
-            width = len(self.a.data)
-            with m.If(self.a.data[width-1] & self.b.data[width-1] & ~self.r_aux[width-1]):
-                sync += self.r.data.eq(int('1',2)<<(width-1))
-            with m.Elif(~self.a.data[width-1] & ~self.b.data[width-1] & self.r_aux[width-1]):
-                sync += self.r.data.eq(~(int('1',2)<<(width-1)))
-            with m.Else():
-                sync += self.r.data.eq(self.a.data + self.b.data)    
+            sync += [
+                self.r.valid.eq(1),
+                self.r.data.eq(self.a.data + self.b.data)
+            ]
 
-        comb += self.r_aux.eq(self.a.data + self.b.data)
-        comb += self.a.ready.eq((~self.r.valid) | (self.r.accepted()))
-        comb += self.b.ready.eq((~self.r.valid) | (self.r.accepted()))
+        comb += [
+            self.a.ready.eq(((~self.r.valid) | (self.r.accepted())) & (self.a.valid & self.b.valid)),
+            self.b.ready.eq(((~self.r.valid) | (self.r.accepted())) & (self.a.valid & self.b.valid)),
+        ]    
+        
         return m
 
 
 async def init_test(dut):
-    cocotb.fork(Clock(dut.clk, 10, 'ns').start())
+    cocotb.fork(Clock(dut.clk, 100, 'ns').start())
     dut.rst <= 1
+    dut.a__ready <= 0
+    dut.b__ready <= 0
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     dut.rst <= 0
 
-
 @cocotb.test()
 async def burst(dut):
     await init_test(dut)
-    
+
     stream_input = Stream.Driver(dut.clk, dut, 'a__')
     stream_input_b = Stream.Driver(dut.clk, dut, 'b__')
     stream_output = Stream.Driver(dut.clk, dut, 'r__')
 
-    N = 100
+    N = 20
     width = len(dut.a__data)
     mask = int('1' * width, 2)
-
+    
     data = [getrandbits(width) for _ in range(N)]
     data2 = [getrandbits(width) for _ in range(N)]
-    #expected = [(d + 1) & mask for d in data]
+    expected = [sum(elements) & mask for elements in zip(*[data, data2])]
     cocotb.fork(stream_input.send(data))
+    #await Timer(10, units='ns')
+    await Timer(450, 'ns')
     cocotb.fork(stream_input_b.send(data2))
     recved = await stream_output.recv(N)
-    #assert recved == expected
+    assert recved == expected
 
 
 if __name__ == '__main__':
